@@ -1,0 +1,84 @@
+parameters:
+- name: netCoreVersion
+  displayName: "It's .net core sdk version to download on agent machine"
+  type: string
+  default:  '6.0.400'
+- name: testProjects
+  displayName: 'List of all test projects will be tested'
+  type: string
+- name: coverageXmlPath
+  displayName: 'All coverage xml generated from cobertura in test project folder'
+  type: string
+  default: $(Build.SourcesDirectory)/tests/**/coverage.cobertura.xml
+- name: mainProjectName
+  displayName: 'The name of project will be published'
+  type: string
+- name: productName
+  displayName: 'The productName of project will be published'
+  type: string
+
+steps:
+
+- task: DownloadSecureFile@1
+  displayName: 'Download secure file'
+  inputs:
+    secureFile: Nuget.config
+
+- task: CopyFiles@2
+  displayName: 'Copy Files to: .'
+  inputs:
+    SourceFolder: '$(Agent.TempDirectory)'
+    Contents: Nuget.config
+    TargetFolder: .
+    OverWrite: true
+
+- task: UseDotNet@2
+  displayName: 'Use .NET Core sdk ${{ parameters.netCoreVersion }}'
+  inputs:
+    version: ${{ parameters.netCoreVersion }}
+
+- task: bleddynrichards.Assembly-Info-Task.Assembly-Info-NetCore.Assembly-Info-NetCore@2
+  displayName: 'Set Assembly Manifest Data'
+  inputs:
+    InsertAttributes: true
+    Authors: 'TMS'
+    Company: StoneCo
+    Product: '${{ parameters.productName }}'
+    Description: '${{ parameters.mainProjectName }}'
+    Copyright: 'Copyright © $(date:yyyy) StoneCo'
+    VersionNumber: '$(Build.BuildNumber)'
+    FileVersionNumber: '$(Build.BuildNumber)'
+    InformationalVersion: '$(Build.BuildNumber)'
+    PackageVersion: '$(Build.BuildNumber)'
+
+- task: DotNetCoreCLI@2
+  displayName: 'dotnet test {{ parameters.testProjects }}'
+  inputs:
+    command: test
+    projects: '${{ parameters.testProjects }}'
+    arguments: '--configuration Release /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura --logger trx --results-directory $(Build.SourcesDirectory)\result-tests'
+    publishTestResults: false
+
+- task: Palmmedia.reportgenerator.reportgenerator-build-release-task.reportgenerator@4
+  displayName: 'Generate cover report from Cobertura'
+  inputs:
+    reports: '${{ parameters.coverageXmlPath }}'
+    targetdir: '$(Build.SourcesDirectory)/CodeCoverage'
+    customSettings: '--'
+  continueOnError: true
+
+- task: PublishCodeCoverageResults@1
+  displayName: 'Publish code coverage from $(Build.SourcesDirectory)/CodeCoverage/Cobertura.xml'
+  inputs:
+    codeCoverageTool: Cobertura
+    summaryFileLocation: '$(Build.SourcesDirectory)/CodeCoverage/Cobertura.xml'
+    reportDirectory: '$(Build.SourcesDirectory)/CodeCoverage/'
+  continueOnError: true
+
+- task: PublishTestResults@2
+  displayName: 'Publish Test Results **/*.trx'
+  inputs:
+    testResultsFormat: VSTest
+    testResultsFiles: '**/*.trx'
+    searchFolder: '$(Build.SourcesDirectory)/result-tests'
+    mergeTestResults: true

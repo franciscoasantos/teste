@@ -1,0 +1,202 @@
+parameters:
+- name: netCoreVersion
+  displayName: "It's .net core sdk version to download on agent machine"
+  type: 'string'
+  default:  '6.0.400'
+- name: netCoreAppVersion
+  displayName: "It's a .net core application version to build"
+  type: string
+  default: 'net6.0'
+- name: mainProjectName
+  displayName: 'The name of project will be published'
+  type: string
+- name: mainProject
+  displayName: 'The full path with main project name'
+- name: productName
+  displayName: 'The productName of project will be published'
+  type: string
+- name: runtimeLinuxIdentifier
+  displayName: 'An identifier for witch linux OS version this gonna be built'
+  type: string
+  default: 'linux-x64'  
+- name: artifactLinuxDirectory
+  displayName: 'The linux path where the dotnet publish put the executables for windows OS'
+  type: string
+  default: ''
+- name: artifactLinuxName
+  displayName: 'Name of published linux artifact to trigger on Release(CD)'
+  type: string
+  default: ''
+- name: dockerImageName
+  displayName: 'Docker image name of project'
+  type: string
+  default: ''
+- name: dockerFilePath
+  displayName: 'Full path of dockerfile'
+  type: string
+  default: ''
+- name: publishGKEProjects
+  type: boolean
+  default: false
+- name: gkeNonProductionProjects
+  displayName: 'Array of GKE projects for Non-production'
+  type: object
+  default: 
+    - id: 'sx14hsm9n0256gvi5hbal84aev1ty6'
+      name: 'android-common-non-prod-android'
+    - id: 's9p8x1b9lvc56e2gjly763u3x20blr'
+      name: 'tms-common-non-prod-tms'
+- name: gkeProductionProjects
+  displayName: 'Array of GKE projects for Production'
+  type: object
+  default: 
+    - id: 'siql5thmfhm888iiok9qehaatvcppb'
+      name: 'android-common-prod-android'
+    - id: 's2zwziljrv5nx1ra6mkgzwu4hcu7z0'
+      name: 'tms-common-prod-tms'
+- name: copyClientKeys
+  displayName: 'Copy ClientKeys.xml from Secure Files while creating the container'
+  type: boolean
+  default: false
+- name: clientKeysSourceFilename
+  displayName: 'ClientKey filename for download from Secure Files'
+  type: string
+  default: ''
+
+jobs:
+- job: publish_to_gcp_docker_registry
+  displayName: 'Publishing application to Google Docker Registry'
+  condition: eq(${{ parameters.publishGKEProjects }}, true)
+  steps:
+  - task: DownloadSecureFile@1
+    displayName: 'Download Nuget.config'
+    inputs:
+      secureFile: Nuget.config
+
+  - task: CopyFiles@2
+    displayName: 'Copy Nuget.config to: .'
+    inputs:
+      SourceFolder: '$(Agent.TempDirectory)'
+      Contents: Nuget.config
+      TargetFolder: .
+      OverWrite: true
+
+  - task: DownloadSecureFile@1
+    name: ClientKeys
+    displayName: 'Download Secure File'
+    condition: eq(${{ parameters.copyClientKeys }}, true)
+    inputs:
+      secureFile: '${{ parameters.clientKeysSourceFileName }}'
+      retryCount: 5
+
+  - powershell: |
+     
+     Write-Host "File: $env:Filename"
+     Rename-Item -Path "$env:Filename" -NewName "ClientKeys.xml"
+    
+    workingDirectory: '$(Agent.TempDirectory)'
+    displayName: 'Remame $(ClientKeys.secureFilePath) to ClientKeys.xml'
+    condition: eq(${{ parameters.copyClientKeys }}, true)
+    env:
+      Filename: $(ClientKeys.secureFilePath)
+  
+  - task: CopyFiles@2
+    displayName: 'Copy ClientKeys.xml to: .'
+    condition: eq(${{ parameters.copyClientKeys }}, true)
+    inputs:
+      SourceFolder: '$(Agent.TempDirectory)'
+      Contents: ClientKeys.xml
+      TargetFolder: .
+      OverWrite: true 
+
+  - task: bleddynrichards.Assembly-Info-Task.Assembly-Info-NetCore.Assembly-Info-NetCore@2
+    displayName: 'Set Assembly Manifest Data'
+    inputs:
+      InsertAttributes: true
+      Authors: 'TMS'
+      Company: StoneCo
+      Product: '${{ parameters.productName }}'
+      Description: '${{ parameters.mainProjectName }}'
+      Copyright: 'Copyright © $(date:yyyy) StoneCo'
+      VersionNumber: '$(Build.BuildNumber)'
+      FileVersionNumber: '$(Build.BuildNumber)'
+      InformationalVersion: '$(Build.BuildNumber)'
+      PackageVersion: '$(Build.BuildNumber)'
+
+  - ${{ each project in parameters.gkeNonProductionProjects }}:
+    - task: Docker@2
+      displayName: 'Build a image and push to NON-PRODUCTION: ${{ project.id }}/${{ parameters.dockerImageName }} :$(Build.BuildNumber)'
+      condition: and(succeeded(), in(variables['Build.SourceBranchName'], 'production', 'staging', '#420741-package-provider-3.12.3'))
+      inputs:
+        containerRegistry: '${{ project.name }}'
+        repository: '${{ project.id }}/${{ parameters.dockerImageName }}'
+        Dockerfile: '${{ parameters.dockerFilePath }}'
+        buildContext: .
+        tags: '$(Build.BuildNumber)'
+
+  - ${{ each project in parameters.gkeProductionProjects }}:
+    - task: Docker@2
+      displayName: 'Build a image and push to PRODUCTION: ${{ project.id }}/${{ parameters.dockerImageName }} :$(Build.BuildNumber)'
+      condition: and(succeeded(), in(variables['Build.SourceBranchName'], 'production'))
+      inputs:
+        containerRegistry: '${{ project.name }}'
+        repository: '${{ project.id }}/${{ parameters.dockerImageName }}'
+        Dockerfile: '${{ parameters.dockerFilePath }}'
+        buildContext: .
+        tags: '$(Build.BuildNumber)'
+
+- job: publish_to_release_cd
+  displayName: 'Publishing application to Release(CD)'
+  steps:
+  - task: DownloadSecureFile@1
+    displayName: 'Download Nuget.config'
+    inputs:
+      secureFile: Nuget.config
+
+  - task: CopyFiles@2
+    displayName: 'Copy Nuget.config to: .'
+    inputs:
+      SourceFolder: '$(Agent.TempDirectory)'
+      Contents: Nuget.config
+      TargetFolder: .
+      OverWrite: true
+
+  - task: bleddynrichards.Assembly-Info-Task.Assembly-Info-NetCore.Assembly-Info-NetCore@2
+    displayName: 'Set Assembly Manifest Data'
+    inputs:
+      InsertAttributes: true
+      Authors: 'TMS'
+      Company: StoneCo
+      Product: '${{ parameters.productName }}'
+      Description: '${{ parameters.mainProjectName }}'
+      Copyright: 'Copyright © $(date:yyyy) StoneCo'
+      VersionNumber: '$(Build.BuildNumber)'
+      FileVersionNumber: '$(Build.BuildNumber)'
+      InformationalVersion: '$(Build.BuildNumber)'
+      PackageVersion: '$(Build.BuildNumber)'
+
+  - task: UseDotNet@2
+    displayName: 'Use .NET Core sdk ${{ parameters.netCoreVersion }}'
+    inputs:
+      version: ${{ parameters.netCoreVersion }}
+
+  - task: DotNetCoreCLI@2
+    displayName: 'Building ${{ parameters.mainProject }} for Linux'
+    inputs:
+      command: publish
+      publishWebProjects: false
+      projects: '$(mainProject)'
+      arguments: '-f $(netCoreAppVersion) -c Release -r $(runtimeLinuxIdentifier) --configfile Nuget.config -o $(artifactLinuxDirectory)'
+      zipAfterPublish: false
+      modifyOutputPath: false
+
+  - task: CopyFiles@2
+    displayName: 'Copy Files to: $(Build.ArtifactStagingDirectory)'
+    inputs:
+      SourceFolder: '$(artifactLinuxDirectory)'
+      TargetFolder: '$(Build.ArtifactStagingDirectory)'
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Artifact: ${{ parameters.artifactLinuxName }}'
+    inputs:
+      ArtifactName: '${{ parameters.artifactLinuxName }}'
